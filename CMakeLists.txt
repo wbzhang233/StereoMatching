@@ -3,6 +3,8 @@ project(StereoMatch)
 
 set(CMAKE_CXX_STANDARD 14)
 set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_SOURCE_DIR}/cmake/")
+set(OpenCV_DIR /opt/ros/kinetic/share/OpenCV-3.3.1-dev)
+
 find_package(OpenCV REQUIRED)
 message("${OpenCV_DIR}")
 INCLUDE_DIRECTORIES("/usr/include/eigen3/")

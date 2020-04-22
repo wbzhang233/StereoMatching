@@ -4,6 +4,8 @@
 
 #include "stereoMatch.h"
 
+const float PI = 3.14159265358;
+
 namespace MyStereoMatch{
 
 /// SGBM
@@ -280,9 +282,9 @@ void computeUDisparity(Mat &UdispMap,Mat disp)
         }
     }
 }
+
 void computeVDisparity(Mat &VdispMap,Mat disp)
 {
-//    VdispMap = Mat(disp.size(),CV_16UC1);
     VdispMap.setTo(0);
     int width=disp.cols;
     int height=disp.rows;
@@ -292,7 +294,7 @@ void computeVDisparity(Mat &VdispMap,Mat disp)
         auto  pRowInDisp=disp.ptr<uchar>(row);
         for(int col=0;col<width;col++)
         {
-            uint8_t currDisp=pRowInDisp[col];
+            uint8_t currDisp = pRowInDisp[col];
             if(currDisp>0&&currDisp<128)
             {
                 VdispMap.at<ushort>(row,currDisp)++;
@@ -301,16 +303,16 @@ void computeVDisparity(Mat &VdispMap,Mat disp)
         }
     }
 }
+
+// 移除障碍物
 Mat removeObstacle(Mat Disparity,Mat Udisparity)
 {
     cv::Mat mObstacleMap;
     mObstacleMap.create(Disparity.rows, Disparity.cols, CV_8UC1);
-
     mObstacleMap.setTo(0);
 
     int height = Disparity.rows;
     int width = Disparity.cols;
-
 
     for (int v = 0; v < height; v++)
     {
@@ -319,13 +321,89 @@ Mat removeObstacle(Mat Disparity,Mat Udisparity)
         for (int u = 0; u < width; u++)
         {
             uint8_t currDisp = pRowInDisp[u];
-            if (currDisp < 128 && Udisparity.at<ushort>(currDisp, u) > 10)
+            // 如果当前点的视差小于阈值,并且U视差图的
+            if (currDisp < 180 && Udisparity.at<ushort>(currDisp, u) > 10)
                 pRowInObsMap[u] = 255;
         }
     }
     return mObstacleMap;
-
 }
+
+
+vector<Vec4f> getObstacleLines(Mat uvdisp,double scale,bool useRefine,bool useCanny)
+{
+    vector<Vec4f> lines_std;
+    if (useCanny)
+        Canny(uvdisp, uvdisp, 10, 255, 3);
+//    namedWindow("canny");
+//    imshow("canny",uvdisp);
+    Ptr<LineSegmentDetector> ls = useRefine ? createLineSegmentDetector(LSD_REFINE_STD,scale)
+            :createLineSegmentDetector(LSD_REFINE_NONE,scale);
+
+    ls->detect(uvdisp, lines_std);
+
+    return lines_std;
+};
+
+vector<Vec4f> getObstacleLines(Mat uvdisp,Mat &draw,double angle,double scale,bool useRefine,bool useCanny)
+{
+    vector<Vec4f> lines_std;
+    if (useCanny)
+        Canny(uvdisp, uvdisp, 10, 255, 3);
+//    namedWindow("canny");
+//    imshow("canny",uvdisp);
+    Ptr<LineSegmentDetector> ls = useRefine ? createLineSegmentDetector(LSD_REFINE_STD,scale)
+                                            :createLineSegmentDetector(LSD_REFINE_NONE,scale);
+    ls->detect(uvdisp, lines_std);
+    filterLines(lines_std,angle);
+    ls->drawSegments(draw,lines_std);
+    return lines_std;
+};
+
+vector<Vec2f> getObstacleHTLines(Mat uvdisp,double scale,bool useRefine,bool useCanny)
+{
+//    vector<Vec4i> linesP; // will hold the results of the detection
+//    HoughLinesP(uvdisp, linesP, 1, CV_PI/180, 128, 50, 10 ); // runs the actual detection
+    vector<Vec2f> lines;
+    HoughLines(uvdisp, lines, 1, CV_PI/180, 128, 0, 0 ); // runs the actual detection
+
+    return lines;
+}
+
+void htpLines(Mat img,vector<Vec4i> &linesP,Mat &draw,int thresholdP){
+    HoughLinesP(img, linesP, 1, CV_PI/180, thresholdP, 20, 10 ); // runs the actual detection
+    // Draw the lines
+    for( size_t i = 0; i < linesP.size(); i++ )
+    {
+        Vec4i l = linesP[i];
+        line( draw, Point(l[0], l[1]), Point(l[2], l[3]), Scalar(0,0,255), 1, LINE_AA);
+    }
+}
+
+// 匹配U和V视差的直线
+// x1,y1,x2,y2
+vector<Rect2f> matchLines(vector<Vec4f> vlines,vector<Vec4f> ulines,int maxDisp){
+    vector<Rect2f> res;
+    for(auto line1:vlines){
+        Rect2f rect;
+//        cout<<"line1:"<<line1<<endl;
+        for(auto line2:ulines){
+            // 横坐标为视差值
+            if(abs(line2[1]+line2[3]-line1[0]-line1[2])<1){
+//                cout<<"line2:"<<line2<<endl;
+                rect.x = line2[0];
+                rect.width = abs(line2[2]-line2[0]);
+                rect.y = line1[1];
+                rect.height = abs(line1[3]-line1[1]);
+//                cout<<"disp:"<<(line2[0]+line2[2])/2<<endl;
+                res.push_back(rect);
+                break;
+            }
+        }
+    }
+    return res;
+}
+
 
 /**
 函数作用：视差图转深度图
@@ -346,7 +424,6 @@ void disp2Depth(cv::Mat dispMap, cv::Mat &depthMap, cv::Mat K,float baseline)
 
     if (type == CV_8U)
     {
-        const float PI = 3.14159265358;
         int height = dispMap.rows;
         int width = dispMap.cols;
         depthMap = Mat(dispMap.size(),CV_16UC1);
@@ -520,7 +597,52 @@ void printMatToTxt(Mat img,string save_name)
         ofstream1<<endl;
     }
 
+    ofstream1.close();
     cout<<save_name<<" has saved!"<<endl;
+}
+
+void printLines(vector<Vec4f> lines,string save_name)
+{
+    ofstream ofstream1;
+    ofstream1.open(save_name);
+    if (ofstream1.fail()){
+        cout<<"打开文件错误!"<<endl;
+        exit(0);
+    }
+
+    ofstream1<<"size:"<<to_string(lines.size())<<endl;
+    for (auto line:lines) {
+        for(int j=0;j<4;++j){
+            ofstream1 <<to_string(line[j])<<" ";
+        }
+        ofstream1<<getTheta(line)<<endl;
+    }
+
+    ofstream1.close();
+    cout<<save_name<<" lines has saved!"<<endl;
+}
+
+void filterLines(vector<Vec4f> &lines,double angle,double epsilon)
+{
+    for(auto iter=lines.begin();iter!=lines.end();++iter){
+        if(abs(getTheta(*iter)-angle)>epsilon){
+            lines.erase(iter);
+            iter--;
+        }
+    }
+}
+
+// 计算斜率
+double getSlope(Vec4f line){
+    return ( line(3)-line(1) ) /( line(2)-line(0) );
+}
+
+//　计算角度
+template <typename _T> double getTheta(_T line){
+    double theta=atan(getSlope(line));
+    if(theta<0){
+        return (theta+PI)*180/PI;
+    }else return  theta*180/PI;
 }
 
 }
